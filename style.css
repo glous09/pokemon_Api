@@ -1,36 +1,54 @@
+.pokemon-img-wrap {
+    width: 140px;
+    height: 140px;
+    margin: 16px auto 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+    border-radius: 14px;
+    transition: border-radius 160ms ease, box-shadow 160ms ease, border-color 160ms ease, background-color 160ms ease;
+    border: 0 solid transparent;
+    background: rgba(255, 255, 255, 0.12);
+}
 
-        .pokemon-img-wrap {
-            width: 140px;
-            height: 140px;
-            margin: 16px auto 0;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            overflow: hidden;
-            border-radius: 14px;
-            transition: border-radius 160ms ease, box-shadow 160ms ease, border-color 160ms ease, background-color 160ms ease;
-            border: 0 solid transparent;
-            background: rgba(255, 255, 255, 0.12);
-        }
+.pokemon-img {
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+    display: block;
+    transform: scale(0.92);
+    transition: transform 160ms ease;
+}
 
-        .pokemon-img {
-            width: 100%;
-            height: 100%;
-            object-fit: contain;
-            display: block;
-            transform: scale(0.92);
-            transition: transform 160ms ease;
-        }
+.pokemon-img-wrap:hover {
+    border-radius: 9999px;
+    border-width: 3px;
+    border-color: rgba(255, 255, 255, 0.75);
+    box-shadow: 0 10px 26px rgba(0, 0, 0, 0.22);
+    background: rgba(255, 255, 255, 0.18);
+}
 
-        .pokemon-img-wrap:hover {
-            border-radius: 9999px;
-            border-width: 3px;
-            border-color: rgba(255, 255, 255, 0.75);
-            box-shadow: 0 10px 26px rgba(0, 0, 0, 0.22);
-            background: rgba(255, 255, 255, 0.18);
-        }
+.pokemon-img-wrap:hover .pokemon-img {
+    transform: scale(0.98);
+}
 
-        .pokemon-img-wrap:hover .pokemon-img {
-            transform: scale(0.98);
-        }
-    
+.title-frame {
+    border-radius: 16px;
+    padding: 14px;
+    background: linear-gradient(135deg, rgba(255, 226, 89, 0.35) 0%, rgba(255, 81, 47, 0.25) 45%, rgba(41, 128, 185, 0.25) 100%);
+    box-shadow: 0 10px 26px rgba(0, 0, 0, 0.10);
+}
+
+.title-frame-inner {
+    border-radius: 12px;
+    padding: 14px 16px;
+    background: rgba(255, 255, 255, 0.75);
+    backdrop-filter: blur(6px);
+}
+
+.filters-card {
+    border-radius: 16px;
+    border: none;
+    box-shadow: 0 10px 26px rgba(0, 0, 0, 0.08);
+}

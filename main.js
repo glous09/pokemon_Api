@@ -1,20 +1,39 @@
-const POKEMON_LIST_ENDPOINT = "https://pokeapi.co/api/v2/pokemon?limit=50&offset=0";
+const POKEMON_LIST_ENDPOINT = "https://pokeapi.co/api/v2/pokemon?limit=100&offset=0";
+
+const state = {
+    nameQuery: "",
+    type: "",
+    abilityQuery: "",
+    evolution: "",
+};
+
+const pokemonList = [];
+const pokemonDetailsByName = new Map();
+const pokemonEvolutionByName = new Map();
+const evolutionChainCacheByUrl = new Map();
+const evolutionInFlightByName = new Set();
+const seenTypes = new Set();
+
+function normalizeText(value) {
+    return String(value).trim().toLowerCase();
+}
+
+function fetchJson(url) {
+    return fetch(url).then((response) => {
+        if (!response.ok) {
+            throw new Error(`Request failed: ${response.status}`);
+        }
+        return response.json();
+    });
+}
 
 async function fetchPokemonList(url) {
-    const response = await fetch(url);
-    if (!response.ok) {
-        throw new Error(`Request failed: ${response.status}`);
-    }
-    const data = await response.json();
+    const data = await fetchJson(url);
     return Array.isArray(data?.results) ? data.results : [];
 }
 
 async function fetchPokemonDetails(url) {
-    const response = await fetch(url);
-    if (!response.ok) {
-        throw new Error(`Request failed: ${response.status}`);
-    }
-    const data = await response.json();
+    const data = await fetchJson(url);
 
     const abilities = Array.isArray(data?.abilities) ? data.abilities : [];
     const abilityNames = abilities
@@ -32,7 +51,9 @@ async function fetchPokemonDetails(url) {
               .filter((name) => typeof name === "string" && name.length > 0)
         : [];
 
-    return { abilityNames, image, typeNames };
+    const speciesUrl = data?.species?.url ?? "";
+
+    return { abilityNames, image, typeNames, speciesUrl };
 }
 
 function formatPokemonName(name) {
@@ -40,26 +61,23 @@ function formatPokemonName(name) {
     return name.charAt(0).toUpperCase() + name.slice(1);
 }
 
-function escapeHtml(value) {
-    return String(value)
-        .replaceAll("&", "&amp;")
-        .replaceAll("<", "&lt;")
-        .replaceAll(">", "&gt;")
-        .replaceAll('"', "&quot;")
-        .replaceAll("'", "&#39;");
-}
+function appendAbilityBadges(container, abilities) {
+    container.replaceChildren();
 
-function escapeAttribute(value) {
-    return String(value).replaceAll('"', "&quot;");
-}
-
-function renderAbilityBadges(abilities) {
     if (!Array.isArray(abilities) || abilities.length === 0) {
-        return `<span class="text-muted">Sin abilities</span>`;
+        const muted = document.createElement("span");
+        muted.className = "text-muted";
+        muted.textContent = "Sin abilities";
+        container.appendChild(muted);
+        return;
     }
-    return abilities
-        .map((a) => `<span class="badge bg-secondary me-1 mb-1">${escapeHtml(a)}</span>`)
-        .join("");
+
+    for (const ability of abilities) {
+        const badge = document.createElement("span");
+        badge.className = "badge bg-secondary me-1 mb-1";
+        badge.textContent = ability;
+        container.appendChild(badge);
+    }
 }
 
 function getCardThemeByType(typeName) {
@@ -87,67 +105,157 @@ function getCardThemeByType(typeName) {
     return themes[typeName] ?? { background: "linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%)", color: "#0c1016" };
 }
 
-function setPokemonCardTheme(pokemonNameKey, typeName) {
-    const card = document.querySelector(`[data-card-for="${CSS.escape(pokemonNameKey)}"]`);
-    if (!card) return;
-
-    const theme = getCardThemeByType(typeName);
-    card.style.background = theme.background;
-    card.style.color = theme.color;
-    card.style.border = "none";
-}
-
-function renderPokemonCards(pokemonList) {
+function renderPokemonCards(items) {
     const container = document.getElementById("pokemon-list");
     if (!container) return;
-    container.textContent = "";
 
-    for (const pokemon of pokemonList) {
-        const name = formatPokemonName(pokemon?.name ?? "");
-        const url = pokemon?.url ?? "#";
-        const key = pokemon?.name ?? "";
+    container.replaceChildren();
+
+    if (!Array.isArray(items) || items.length === 0) {
+        container.textContent = "No hay resultados";
+        return;
+    }
+
+    for (const item of items) {
+        const nameKey = item?.name ?? "";
+        if (!nameKey) continue;
+
+        const details = pokemonDetailsByName.get(nameKey);
+        const evo = pokemonEvolutionByName.get(nameKey);
+        const displayName = formatPokemonName(nameKey);
+        const href = typeof item?.url === "string" && item.url.length > 0 ? item.url : "#";
+
+        const typeName = details?.typeNames?.[0] ?? "normal";
+        const theme = getCardThemeByType(typeName);
 
         const col = document.createElement("div");
         col.className = "col-6 col-md-4 col-lg-3 mb-3";
 
-        col.innerHTML = `
-            <div class="card h-100" data-card-for="${escapeAttribute(key)}">
-                <img
-                    data-img-for="${escapeAttribute(key)}"
-                    class="card-img-top p-3"
-                    style="height: 140px; object-fit: contain;"
-                    alt="${escapeAttribute(name)}"
-                />
-                <div class="card-body position-relative">
-                    <h2 class="h6 card-title mb-0">${escapeHtml(name)}</h2>
-                    <div class="mt-2" data-abilities-for="${escapeAttribute(key)}">
-                        <span class="text-muted">Cargando abilities...</span>
-                    </div>
-                    <a href="${url}" target="_blank" rel="noopener noreferrer" class="stretched-link"></a>
-                </div>
-            </div>
-        `;
+        const card = document.createElement("div");
+        card.className = "card h-100";
+        card.style.background = theme.background;
+        card.style.color = theme.color;
+        card.style.border = "none";
 
+        const imgWrap = document.createElement("div");
+        imgWrap.className = "pokemon-img-wrap";
+
+        const img = document.createElement("img");
+        img.className = "pokemon-img";
+        img.alt = displayName;
+        if (typeof details?.image === "string" && details.image.length > 0) {
+            img.src = details.image;
+            img.loading = "lazy";
+            img.decoding = "async";
+        } else {
+            img.style.opacity = "0";
+        }
+
+        imgWrap.appendChild(img);
+
+        const body = document.createElement("div");
+        body.className = "card-body position-relative";
+
+        const title = document.createElement("h2");
+        title.className = "h6 card-title mb-0";
+        title.textContent = displayName;
+
+        const abilitiesContainer = document.createElement("div");
+        abilitiesContainer.className = "mt-2";
+        if (details) {
+            appendAbilityBadges(abilitiesContainer, details.abilityNames);
+        } else {
+            const muted = document.createElement("span");
+            muted.className = "text-muted";
+            muted.textContent = "Cargando abilities...";
+            abilitiesContainer.appendChild(muted);
+        }
+
+        const evoText = evo?.chainText ?? "";
+        if (evoText) {
+            const evoLine = document.createElement("div");
+            evoLine.className = "mt-2 small";
+            evoLine.textContent = evoText;
+            body.appendChild(evoLine);
+        }
+
+        const link = document.createElement("a");
+        link.className = "stretched-link";
+        link.href = href;
+        link.target = "_blank";
+        link.rel = "noopener noreferrer";
+
+        body.appendChild(title);
+        body.appendChild(abilitiesContainer);
+        body.appendChild(link);
+
+        card.appendChild(imgWrap);
+        card.appendChild(body);
+        col.appendChild(card);
         container.appendChild(col);
     }
 }
 
-function setPokemonAbilities(pokemonNameKey, abilities) {
-    const el = document.querySelector(`[data-abilities-for="${CSS.escape(pokemonNameKey)}"]`);
-    if (!el) return;
-    el.innerHTML = renderAbilityBadges(abilities);
+function setTypeOptionsFromDetails(details) {
+    const select = document.getElementById("filter-type");
+    if (!select) return;
+
+    for (const typeName of details?.typeNames ?? []) {
+        if (seenTypes.has(typeName)) continue;
+        seenTypes.add(typeName);
+
+        const option = document.createElement("option");
+        option.value = typeName;
+        option.textContent = formatPokemonName(typeName);
+        select.appendChild(option);
+    }
 }
 
-function setPokemonImage(pokemonNameKey, imageUrl) {
-    const img = document.querySelector(`[data-img-for="${CSS.escape(pokemonNameKey)}"]`);
-    if (!img) return;
-    if (typeof imageUrl === "string" && imageUrl.length > 0) {
-        img.src = imageUrl;
-        img.loading = "lazy";
-        img.decoding = "async";
-        return;
+function buildEvolutionMapFromChainNode(node, stage, map) {
+    const name = node?.species?.name ?? "";
+    if (name) {
+        map.set(name, {
+            stage,
+            isFinal: Array.isArray(node?.evolves_to) ? node.evolves_to.length === 0 : true,
+        });
     }
-    img.remove();
+
+    const children = Array.isArray(node?.evolves_to) ? node.evolves_to : [];
+    for (const child of children) {
+        buildEvolutionMapFromChainNode(child, stage + 1, map);
+    }
+}
+
+function buildEvolutionStages(chainNode) {
+    const stages = [];
+    const queue = [{ node: chainNode, depth: 0 }];
+
+    while (queue.length > 0) {
+        const current = queue.shift();
+        const node = current?.node;
+        const depth = current?.depth ?? 0;
+
+        const name = node?.species?.name ?? "";
+        if (name) {
+            if (!Array.isArray(stages[depth])) stages[depth] = [];
+            if (!stages[depth].includes(name)) stages[depth].push(name);
+        }
+
+        const children = Array.isArray(node?.evolves_to) ? node.evolves_to : [];
+        for (const child of children) {
+            queue.push({ node: child, depth: depth + 1 });
+        }
+    }
+
+    return stages.filter((s) => Array.isArray(s) && s.length > 0);
+}
+
+function formatEvolutionChainText(stages) {
+    if (!Array.isArray(stages) || stages.length === 0) return "";
+    return stages
+        .map((stage) => (Array.isArray(stage) ? stage.join(" / ") : ""))
+        .filter((s) => s.length > 0)
+        .join(" → ");
 }
 
 async function runWithConcurrency(items, concurrency, worker) {
@@ -166,30 +274,177 @@ async function runWithConcurrency(items, concurrency, worker) {
     await Promise.all(executing);
 }
 
+async function ensureEvolutionInfoFor(items) {
+    const need = [];
+
+    for (const item of items) {
+        const nameKey = item.name;
+        if (pokemonEvolutionByName.has(nameKey)) continue;
+        if (evolutionInFlightByName.has(nameKey)) continue;
+
+        const details = pokemonDetailsByName.get(nameKey);
+        const speciesUrl = details?.speciesUrl ?? "";
+        if (!speciesUrl) continue;
+
+        evolutionInFlightByName.add(nameKey);
+        need.push({ nameKey, speciesUrl });
+    }
+
+    if (need.length === 0) return;
+
+    await runWithConcurrency(need, 6, async ({ nameKey, speciesUrl }) => {
+        try {
+            const species = await fetchJson(speciesUrl);
+            const chainUrl = species?.evolution_chain?.url ?? "";
+            if (!chainUrl) {
+                pokemonEvolutionByName.set(nameKey, { hasEvolution: false, isFinal: true, stage: 1, chainText: "" });
+                scheduleRender();
+                return;
+            }
+
+            let cached = evolutionChainCacheByUrl.get(chainUrl);
+            if (!cached) {
+                const chainData = await fetchJson(chainUrl);
+                const map = new Map();
+                buildEvolutionMapFromChainNode(chainData?.chain, 1, map);
+                const stages = buildEvolutionStages(chainData?.chain);
+                cached = { map, hasEvolution: map.size > 1, chainText: formatEvolutionChainText(stages) };
+                evolutionChainCacheByUrl.set(chainUrl, cached);
+            }
+
+            const info = cached.map.get(nameKey) ?? { stage: 1, isFinal: true };
+            pokemonEvolutionByName.set(nameKey, {
+                hasEvolution: cached.hasEvolution,
+                isFinal: Boolean(info.isFinal),
+                stage: Number(info.stage) || 1,
+                chainText: cached.chainText,
+            });
+            scheduleRender();
+        } catch (error) {
+            pokemonEvolutionByName.set(nameKey, { hasEvolution: false, isFinal: true, stage: 1, chainText: "" });
+            scheduleRender();
+        } finally {
+            evolutionInFlightByName.delete(nameKey);
+        }
+    });
+}
+
+function getFilteredItems() {
+    const nameQuery = normalizeText(state.nameQuery);
+    const type = normalizeText(state.type);
+    const abilityQuery = normalizeText(state.abilityQuery);
+    const evolution = normalizeText(state.evolution);
+
+    return pokemonList.filter((item) => {
+        const nameKey = item.name;
+        if (nameQuery && !normalizeText(nameKey).includes(nameQuery)) return false;
+
+        const details = pokemonDetailsByName.get(nameKey);
+        if (type) {
+            const types = details?.typeNames ?? [];
+            if (!Array.isArray(types) || !types.includes(type)) return false;
+        }
+
+        if (abilityQuery) {
+            const abilities = details?.abilityNames ?? [];
+            const has = Array.isArray(abilities) && abilities.some((a) => normalizeText(a).includes(abilityQuery));
+            if (!has) return false;
+        }
+
+        if (evolution) {
+            const evo = pokemonEvolutionByName.get(nameKey);
+            if (!evo) return false;
+            if (evolution === "has") return evo.hasEvolution;
+            if (evolution === "none") return !evo.hasEvolution;
+            if (evolution === "final") return evo.isFinal;
+        }
+
+        return true;
+    });
+}
+
+let renderScheduled = false;
+function scheduleRender() {
+    if (renderScheduled) return;
+    renderScheduled = true;
+
+    requestAnimationFrame(() => {
+        renderScheduled = false;
+        const filtered = getFilteredItems();
+        renderPokemonCards(filtered);
+
+        if (normalizeText(state.evolution)) {
+            ensureEvolutionInfoFor(filtered);
+        } else {
+            ensureEvolutionInfoFor(filtered.slice(0, 12));
+        }
+    });
+}
+
+function bindFilters() {
+    const nameInput = document.getElementById("filter-name");
+    const typeSelect = document.getElementById("filter-type");
+    const abilityInput = document.getElementById("filter-ability");
+    const evolutionSelect = document.getElementById("filter-evolution");
+
+    if (nameInput) {
+        nameInput.addEventListener("input", () => {
+            state.nameQuery = nameInput.value;
+            scheduleRender();
+        });
+    }
+
+    if (typeSelect) {
+        typeSelect.addEventListener("change", () => {
+            state.type = typeSelect.value;
+            scheduleRender();
+        });
+    }
+
+    if (abilityInput) {
+        abilityInput.addEventListener("input", () => {
+            state.abilityQuery = abilityInput.value;
+            scheduleRender();
+        });
+    }
+
+    if (evolutionSelect) {
+        evolutionSelect.addEventListener("change", () => {
+            state.evolution = evolutionSelect.value;
+            scheduleRender();
+        });
+    }
+}
+
 document.addEventListener("DOMContentLoaded", async () => {
     try {
+        bindFilters();
+
         const list = await fetchPokemonList(POKEMON_LIST_ENDPOINT);
-        if (list.length === 0) {
+        pokemonList.length = 0;
+        pokemonList.push(...list);
+
+        if (pokemonList.length === 0) {
             const container = document.getElementById("pokemon-list");
             if (container) container.textContent = "No se encontraron Pokémon";
             return;
         }
-        renderPokemonCards(list);
 
-        await runWithConcurrency(list, 10, async (pokemon) => {
-            const key = pokemon?.name ?? "";
+        scheduleRender();
+
+        await runWithConcurrency(pokemonList, 10, async (pokemon) => {
+            const nameKey = pokemon?.name ?? "";
             const url = pokemon?.url ?? "";
-            if (!key || !url) return;
+            if (!nameKey || !url) return;
 
             try {
                 const details = await fetchPokemonDetails(url);
-                setPokemonAbilities(key, details.abilityNames);
-                setPokemonImage(key, details.image);
-                setPokemonCardTheme(key, details.typeNames?.[0] ?? "normal");
+                pokemonDetailsByName.set(nameKey, details);
+                setTypeOptionsFromDetails(details);
+                scheduleRender();
             } catch (error) {
-                setPokemonAbilities(key, []);
-                setPokemonImage(key, "");
-                setPokemonCardTheme(key, "normal");
+                pokemonDetailsByName.set(nameKey, { abilityNames: [], image: "", typeNames: ["normal"], speciesUrl: "" });
+                scheduleRender();
             }
         });
     } catch (error) {
